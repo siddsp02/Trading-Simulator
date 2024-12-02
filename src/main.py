@@ -1,9 +1,8 @@
 # !usr/bin/env python3
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
-from functools import partial
-from itertools import starmap
 from pprint import pprint
 from typing import NamedTuple
 
@@ -28,6 +27,10 @@ class Order(NamedTuple):
     status: Status = Status.UNFILLED
     timestamp: float = datetime.now().timestamp()
 
+    @property
+    def size(self) -> float:
+        return self.qty * get_stock_price(self.ticker)
+
 
 def get_stock_price(ticker: str) -> float:
     try:
@@ -36,104 +39,94 @@ def get_stock_price(ticker: str) -> float:
         raise LookupError(f'Stock with ticker "{ticker}" does not exist.')
 
 
-class Position(NamedTuple):
+@dataclass
+class Position:
     ticker: str
-    qty: int
-    price: float
+    qty: int = 0
+    price: float = 0
+
+    def update(self, qty: int, new_price: float | None = None) -> None:
+        if new_price is None:
+            new_price = get_stock_price(self.ticker)
+        self.qty += qty
+        if qty > 0:
+            self.price = (self.qty * self.price + qty * new_price) / self.qty
+
+    @property
+    def pnl(self) -> float:
+        price = get_stock_price(self.ticker)
+        return self.qty * (price - self.price)
+
+    @property
+    def value(self) -> float:
+        price = get_stock_price(self.ticker)
+        return self.qty * price
 
 
-def update_position(
-    position: Position, add_qty: int, new_price: float | None = None
-) -> Position:
-    ticker, old_qty, old_price = position
-    if new_price is None:
-        new_price = get_stock_price(ticker)
-    price = (old_qty * old_price + add_qty * new_price) / (old_qty + add_qty)
-    qty = old_qty + add_qty
-    return Position(ticker, qty, price)
+@dataclass
+class Account:
+    cash: float
+    positions: dict[str, Position] = field(init=False, default_factory=dict)
+    orders: list[Order] = field(init=False, default_factory=list)
 
+    @property
+    def pnl(self) -> float:
+        return sum(pos.pnl for pos in self.positions.values())
 
-def calc_pnl(ticker: str, avg_price: float, qty: int, pos: int) -> float:
-    if qty > pos:
-        raise ValueError("Can't sell more stocks than you own.")
-    price = get_stock_price(ticker)
-    return qty * (price - avg_price)
+    @property
+    def balance(self) -> float:
+        return self.cash
 
+    @balance.setter
+    def balance(self, amt: float) -> None:
+        self.cash = amt
 
-def calc_pnl_unrealized(ticker: str, position: Position) -> float:
-    price = get_stock_price(ticker)
-    return position.qty * (price - position.price)
+    @property
+    def equity(self) -> float:
+        return self.balance + sum(pos.value for pos in self.positions.values())
 
-
-def calc_total_pnl_unrealized(positions: dict[str, Position]) -> float:
-    return sum(starmap(calc_pnl_unrealized, positions.items()))
-
-
-def trade_stock(
-    action: Action,
-    ticker: str,
-    positions: dict[str, Position],
-    balance: float,
-    qty: int,
-) -> tuple[float, Order]:
-    price = get_stock_price(ticker)
-    order_size = qty * price
-
-    match action:
-        case Action.BUY:
-            if order_size > balance:
-                raise ValueError("Insufficient funds to make trade.")
-            position = positions.get(ticker, Position(ticker, 0, price))
-            positions[ticker] = update_position(position, qty, price)
-            balance -= order_size
-        case Action.SELL:
-            ticker, old_qty, avg_price = positions[ticker]
-            if qty > old_qty:
-                raise ValueError("Can't sell more stocks than you own.")
-            positions[ticker] = Position(ticker, old_qty - qty, avg_price)
-            balance += order_size
-        case _:
-            raise ValueError("Invalid trading action.")
-
-    return balance, Order(ticker, action, qty, Status.FILLED)
-
-
-def calc_equity(balance: float, positions: dict[str, Position]) -> float:
-    return (
-        balance
-        + sum(qty * price for _, qty, price in positions.values())
-        + calc_total_pnl_unrealized(positions)
-    )
-
-
-buy_stock = partial(trade_stock, Action.BUY)
-sell_stock = partial(trade_stock, Action.SELL)
+    def execute_order(self, order: Order) -> None:
+        match order.action:
+            case Action.BUY:
+                if order.size > self.balance:
+                    raise ValueError("Insufficient funds to make trade.")
+                self.balance -= order.size
+                self.positions.setdefault(order.ticker, Position(order.ticker)).update(
+                    order.qty, get_stock_price(order.ticker)
+                )
+            case Action.SELL:
+                if order.ticker not in self.positions:
+                    raise ValueError("Position in stock doesn't exist.")
+                if order.qty > self.positions[order.ticker].qty:
+                    raise ValueError("Can't sell more stocks than you own.")
+                self.balance += order.size
+                self.positions[order.ticker].update(-order.qty)
+            case _:
+                raise ValueError("Invalid action.")
 
 
 def main() -> None:
-    balance = 10_000.0
-    positions = {}
+    acc = Account(10_000.0)
 
-    balance, order = buy_stock("AAPL", positions, balance, qty=10)
+    buy_order_1 = Order("AAPL", Action.BUY, qty=10)
+    buy_order_2 = Order("GOOGL", Action.BUY, qty=10)
 
-    print(order, balance, sep="\n")
-    pprint(positions)
-    print()
+    sell_order_1 = Order("AAPL", Action.SELL, qty=10)
+    sell_order_2 = Order("GOOGL", Action.SELL, qty=10)
 
-    balance, order = buy_stock("GOOGL", positions, balance, qty=10)
+    acc.execute_order(buy_order_1)
+    acc.execute_order(buy_order_2)
 
-    print(order, balance, sep="\n")
-    pprint(positions)
-    print()
+    pprint(acc.positions)
 
-    STOCK_PRICES["GOOGL"] = 200
-    STOCK_PRICES["AAPL"] = 500  # Update price.
+    STOCK_PRICES["GOOGL"] = 300
+    STOCK_PRICES["AAPL"] = 300
 
-    print(order, balance, sep="\n")
-    pprint(positions)
-    print()
+    acc.execute_order(sell_order_1)
+    acc.execute_order(sell_order_2)
 
-    print(calc_equity(balance, positions))
+    pprint(acc.positions)
+    print(acc.equity)
 
 
 if __name__ == "__main__":
