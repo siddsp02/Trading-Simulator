@@ -1,10 +1,11 @@
 # !usr/bin/env python3
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 from pprint import pprint
-from typing import NamedTuple
+from typing import Any, Iterable, NamedTuple
 
 STOCK_PRICES = {"AAPL": 200, "GOOGL": 200, "MSFT": 400}
 
@@ -20,7 +21,8 @@ class Status(IntEnum):
     FILLED = 2
 
 
-class Order(NamedTuple):
+@dataclass
+class Order:
     ticker: str
     action: Action
     qty: int
@@ -48,9 +50,9 @@ class Position:
     def update(self, qty: int, new_price: float | None = None) -> None:
         if new_price is None:
             new_price = get_stock_price(self.ticker)
-        self.qty += qty
         if qty > 0:
-            self.price = (self.qty * self.price + qty * new_price) / self.qty
+            self.price = (self.qty * self.price + qty * new_price) / (self.qty + qty)
+        self.qty += qty
 
     @property
     def pnl(self) -> float:
@@ -69,6 +71,10 @@ class Account:
     positions: dict[str, Position] = field(init=False, default_factory=dict)
     orders: list[Order] = field(init=False, default_factory=list)
 
+    def __post_init__(self) -> None:
+        if self.cash < 0:
+            raise ValueError("Funds cannot be negative.")
+
     @property
     def pnl(self) -> float:
         return sum(pos.pnl for pos in self.positions.values())
@@ -79,11 +85,20 @@ class Account:
 
     @balance.setter
     def balance(self, amt: float) -> None:
+        if amt < 0:
+            raise ValueError("Balance cannot be negative.")
         self.cash = amt
 
     @property
     def equity(self) -> float:
         return self.balance + sum(pos.value for pos in self.positions.values())
+
+    def execute_pending_orders(self) -> None:
+        for order in self.orders:
+            self.execute_order(order)
+
+    def make_order(self, ticker: str, action: Action, qty: int) -> None:
+        self.orders.append(Order(ticker, action, qty))
 
     def execute_order(self, order: Order) -> None:
         match order.action:
@@ -92,8 +107,9 @@ class Account:
                     raise ValueError("Insufficient funds to make trade.")
                 self.balance -= order.size
                 self.positions.setdefault(order.ticker, Position(order.ticker)).update(
-                    order.qty, get_stock_price(order.ticker)
+                    order.qty
                 )
+                order.status = Status.FILLED
             case Action.SELL:
                 if order.ticker not in self.positions:
                     raise ValueError("Position in stock doesn't exist.")
@@ -101,6 +117,7 @@ class Account:
                     raise ValueError("Can't sell more stocks than you own.")
                 self.balance += order.size
                 self.positions[order.ticker].update(-order.qty)
+                order.status = Status.FILLED
             case _:
                 raise ValueError("Invalid action.")
 
@@ -108,25 +125,12 @@ class Account:
 def main() -> None:
     acc = Account(10_000.0)
 
-    buy_order_1 = Order("AAPL", Action.BUY, qty=10)
-    buy_order_2 = Order("GOOGL", Action.BUY, qty=10)
+    acc.make_order(ticker="AAPL", action=Action.BUY, qty=10)
+    acc.make_order(ticker="GOOGL", action=Action.BUY, qty=10)
 
-    sell_order_1 = Order("AAPL", Action.SELL, qty=10)
-    sell_order_2 = Order("GOOGL", Action.SELL, qty=10)
-
-    acc.execute_order(buy_order_1)
-    acc.execute_order(buy_order_2)
-
-    pprint(acc.positions)
-
-    STOCK_PRICES["GOOGL"] = 300
-    STOCK_PRICES["AAPL"] = 300
-
-    acc.execute_order(sell_order_1)
-    acc.execute_order(sell_order_2)
-
-    pprint(acc.positions)
-    print(acc.equity)
+    pprint(acc)
+    acc.execute_pending_orders()
+    pprint(acc)
 
 
 if __name__ == "__main__":
