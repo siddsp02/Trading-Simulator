@@ -1,11 +1,9 @@
 # !usr/bin/env python3
 
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 from pprint import pprint
-from typing import Any, Iterable, NamedTuple
 
 STOCK_PRICES = {"AAPL": 200, "GOOGL": 200, "MSFT": 400}
 
@@ -25,13 +23,39 @@ class Status(IntEnum):
 class Order:
     ticker: str
     action: Action
-    qty: int
-    status: Status = Status.UNFILLED
+    amount: int = 0
+    filled: int = field(init=False, default=0)
     timestamp: float = datetime.now().timestamp()
+
+    def __post_init__(self) -> None:
+        if self.amount < 0:
+            raise ValueError("Can't make an order for a negative amount.")
+
+    def fill(self, amount: int | None = None) -> None:
+        if amount is None:
+            self.filled = self.amount
+        else:
+            if amount < 0:
+                raise ValueError("Amount to fill cannot be negative.")
+            if amount > self.remaining:
+                raise ValueError("Cannot fill more stocks than remaining in order.")
+            self.filled += amount
+
+    @property
+    def remaining(self) -> int:
+        return self.amount - self.filled
 
     @property
     def size(self) -> float:
-        return self.qty * get_stock_price(self.ticker)
+        return self.amount * get_stock_price(self.ticker)
+
+    @property
+    def status(self) -> Status:
+        if self.filled == self.amount:
+            return Status.FILLED
+        if 0 < self.filled < self.amount:
+            return Status.PARTIALLY_FILLED
+        return Status.UNFILLED
 
 
 def get_stock_price(ticker: str) -> float:
@@ -93,43 +117,49 @@ class Account:
     def equity(self) -> float:
         return self.balance + sum(pos.value for pos in self.positions.values())
 
+    def clear_filled_orders(self) -> None:
+        self.orders[:] = (
+            order for order in self.orders if order.status != Status.FILLED
+        )
+
     def execute_pending_orders(self) -> None:
         for order in self.orders:
             self.execute_order(order)
 
-    def make_order(self, ticker: str, action: Action, qty: int) -> None:
-        self.orders.append(Order(ticker, action, qty))
+    def make_order(self, ticker: str, action: Action, qty: int) -> Order:
+        order = Order(ticker, action, qty)
+        if order.size > self.balance:
+            raise ValueError("Insufficient funds to make order.")
+        self.orders.append(order)
+        return order
 
     def execute_order(self, order: Order) -> None:
+        ticker = order.ticker
         match order.action:
             case Action.BUY:
-                if order.size > self.balance:
-                    raise ValueError("Insufficient funds to make trade.")
                 self.balance -= order.size
-                self.positions.setdefault(order.ticker, Position(order.ticker)).update(
-                    order.qty
-                )
-                order.status = Status.FILLED
+                position = self.positions.setdefault(ticker, Position(ticker))
+                position.update(order.amount)
+                order.fill()
             case Action.SELL:
-                if order.ticker not in self.positions:
-                    raise ValueError("Position in stock doesn't exist.")
-                if order.qty > self.positions[order.ticker].qty:
+                position = self.positions[order.ticker]
+                if order.amount > position.qty:
                     raise ValueError("Can't sell more stocks than you own.")
                 self.balance += order.size
-                self.positions[order.ticker].update(-order.qty)
-                order.status = Status.FILLED
+                position.update(-order.amount)
+                order.fill()
             case _:
                 raise ValueError("Invalid action.")
 
 
 def main() -> None:
     acc = Account(10_000.0)
-
-    acc.make_order(ticker="AAPL", action=Action.BUY, qty=10)
-    acc.make_order(ticker="GOOGL", action=Action.BUY, qty=10)
-
+    order = acc.make_order("AAPL", Action.BUY, 10)
+    print(order)
     pprint(acc)
     acc.execute_pending_orders()
+    pprint(acc)
+    acc.clear_filled_orders()
     pprint(acc)
 
 
