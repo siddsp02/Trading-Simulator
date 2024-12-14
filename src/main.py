@@ -1,12 +1,11 @@
 # !usr/bin/env python3
 
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from enum import IntEnum
 from functools import partial
 from math import nan
-from pprint import pprint
 from statistics import mean
 from typing import Iterable, Iterator
 
@@ -131,6 +130,7 @@ class Account:
     cash: float = field(init=False)
     positions: dict[str, Position] = field(init=False, default_factory=dict)
     orders: list[Order] = field(init=False, default_factory=list)
+    trades: list[Trade] = field(init=False, default_factory=list)
 
     def __post_init__(self, starting_balance: float) -> None:
         if starting_balance < 0:
@@ -197,10 +197,6 @@ class Account:
         position.update_from_order(order)
         self.balance -= order.get_size(absval=False)
 
-    def make_and_execute_order(self, ticker: str, action: Action, qty: int) -> None:
-        order = self.make_order(ticker, action, qty)
-        self.execute_order(order)
-
     def buy_stock(self, ticker: str, qty: int | None = None) -> None:
         if qty is None:
             qty = int(self.balance / get_stock_price(ticker))
@@ -212,6 +208,16 @@ class Account:
             qty = self.positions[ticker].qty
         order = self.make_order(ticker, Action.SELL, qty)
         self.execute_order(order)
+        self.trades.append(Trade(self.positions[ticker], order))
+
+    def make_and_execute_order(self, ticker: str, action: Action, qty: int) -> None:
+        match action:
+            case Action.BUY:
+                self.buy_stock(ticker, qty)
+            case Action.SELL:
+                self.sell_stock(ticker, qty)
+            case _:
+                raise ValueError("Invalid action.")
 
 
 def moving_avg(
