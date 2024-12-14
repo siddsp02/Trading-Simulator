@@ -149,6 +149,10 @@ class Account:
         return sum(pos.pnl for pos in self.positions.values())
 
     @property
+    def realized_pnl(self) -> float:
+        return sum(trade.realized_pnl for trade in self.trades)
+
+    @property
     def balance(self) -> float:
         return self.cash
 
@@ -161,6 +165,11 @@ class Account:
     @property
     def equity(self) -> float:
         return self.balance + sum(pos.value for pos in self.positions.values())
+
+    def close_positions(self, tickers: list[str] | None = None) -> None:
+        tickers = list(self.positions) if tickers is None else tickers
+        for ticker in tickers:
+            self.sell_stock(ticker)
 
     def clear_filled_orders(self) -> None:
         self.orders[:] = (
