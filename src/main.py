@@ -1,140 +1,34 @@
 # !usr/bin/env python3
 
 from dataclasses import InitVar, dataclass, field
-from datetime import datetime
-from enum import IntEnum
+from decimal import Decimal
+from pprint import pprint
 
-from technicals import Action
-
-STOCK_PRICES = {"AAPL": 200, "GOOGL": 200, "MSFT": 400}
-
-
-class Status(IntEnum):
-    UNFILLED = 0
-    PARTIALLY_FILLED = 1
-    FILLED = 2
-
-
-@dataclass
-class Order:
-    ticker: str
-    action: Action
-    amount: int = 0
-    price: float = field(init=False)
-    filled: int = field(init=False, default=0)
-    timestamp: float = datetime.now().timestamp()
-
-    def __str__(self) -> str:
-        return f"<{self.action.name} {self.ticker} @ {self.price} ({self.filled}/{self.amount} filled)>"
-
-    def __post_init__(self) -> None:
-        if self.amount < 0:
-            raise ValueError("Can't make an order for a negative amount.")
-        if self.action not in Action:
-            raise ValueError("Invalid Action.")
-        self.price = get_stock_price(self.ticker)
-
-    def fill(self, amount: int | None = None) -> None:
-        if amount is None:
-            self.filled = self.amount
-        else:
-            if amount < 0:
-                raise ValueError("Amount to fill cannot be negative.")
-            if amount > self.remaining:
-                raise ValueError("Cannot fill more stocks than remaining in order.")
-            self.filled += amount
-
-    def get_size(self, absval: bool = True) -> float:
-        return self.size if (self.action == Action.BUY or absval) else -self.size
-
-    @property
-    def remaining(self) -> int:
-        return self.amount - self.filled
-
-    @property
-    def size(self) -> float:
-        return self.amount * self.price
-
-    @property
-    def status(self) -> Status:
-        if self.filled == self.amount:
-            return Status.FILLED
-        if 0 < self.filled < self.amount:
-            return Status.PARTIALLY_FILLED
-        return Status.UNFILLED
-
-
-def get_stock_price(ticker: str) -> float:
-    try:
-        return STOCK_PRICES[ticker]
-    except KeyError:
-        raise LookupError(f'Stock with ticker "{ticker}" does not exist.')
-
-
-@dataclass
-class Position:
-    ticker: str
-    qty: int = 0
-    price: float = 0
-
-    def update_from_order(self, order: Order) -> None:
-        self.update(order.amount if order.action == Action.BUY else -order.amount)
-        order.fill()
-
-    def update(self, qty: int, new_price: float | None = None) -> None:
-        if new_price is None:
-            new_price = get_stock_price(self.ticker)
-        if qty > 0:
-            self.price = (self.qty * self.price + qty * new_price) / (self.qty + qty)
-        self.qty += qty
-
-    @property
-    def pnl(self) -> float:
-        price = get_stock_price(self.ticker)
-        return self.qty * (price - self.price)
-
-    @property
-    def value(self) -> float:
-        price = get_stock_price(self.ticker)
-        return self.qty * price
-
-
-@dataclass
-class Trade:
-    position: InitVar[Position]
-    order: Order
-    entry_price: float = field(init=False)
-    timestamp: float = datetime.now().timestamp()
-
-    def __post_init__(self, position: Position) -> None:
-        if position.qty > self.order.amount:
-            raise ValueError()
-        self.entry_price = position.price
-
-    @property
-    def realized_pnl(self) -> float:
-        return (self.order.price - self.entry_price) * self.order.amount
+try:
+    from market import Order, OrderStatus, Position, Trade, get_stock_price
+    from technicals import Action
+except ImportError:
+    from src.market import Order, OrderStatus, Position, Trade, get_stock_price
+    from src.technicals import Action
 
 
 @dataclass
 class Account:
-    starting_balance: InitVar[float]
-    cash: float = field(init=False)
+    starting_balance: InitVar[int | Decimal]
+    cash: Decimal = field(init=False)
     positions: dict[str, Position] = field(init=False, default_factory=dict)
     orders: list[Order] = field(init=False, default_factory=list)
     trades: list[Trade] = field(init=False, default_factory=list)
 
-    def __post_init__(self, starting_balance: float) -> None:
-        if starting_balance < 0:
-            raise ValueError("Funds cannot be negative.")
-        self.balance = starting_balance
+    def __post_init__(self, starting_balance: int | Decimal) -> None:
+        self.balance = Decimal(starting_balance)
 
-    def deposit(self, amount: float) -> None:
+    def deposit(self, amount: Decimal) -> None:
         if amount < 0:
             raise ValueError("Can only deposit a non-negative amount of money.")
         self.balance += amount
 
-    def withdraw(self, amount: float) -> None:
+    def withdraw(self, amount: Decimal) -> None:
         if amount > self.balance:
             raise ValueError("Cannot withdraw more money than you have.")
         if amount < 0:
@@ -145,25 +39,25 @@ class Account:
         self.balance -= amount
 
     @property
-    def pnl(self) -> float:
-        return sum(pos.pnl for pos in self.positions.values())
+    def pnl(self) -> Decimal:
+        return sum(pos.pnl for pos in self.positions.values())  # type: ignore
 
     @property
-    def realized_pnl(self) -> float:
-        return sum(trade.realized_pnl for trade in self.trades)
+    def realized_pnl(self) -> Decimal:
+        return sum(trade.realized_pnl for trade in self.trades)  # type:ignore
 
     @property
-    def balance(self) -> float:
+    def balance(self) -> Decimal:
         return self.cash
 
     @balance.setter
-    def balance(self, amt: float) -> None:
+    def balance(self, amt: Decimal) -> None:
         if amt < 0:
             raise ValueError("Balance cannot be negative.")
         self.cash = amt
 
     @property
-    def equity(self) -> float:
+    def equity(self) -> Decimal:
         return self.balance + sum(pos.value for pos in self.positions.values())
 
     def close_positions(self, tickers: list[str] | None = None) -> None:
@@ -173,7 +67,7 @@ class Account:
 
     def clear_filled_orders(self) -> None:
         self.orders[:] = (
-            order for order in self.orders if order.status != Status.FILLED
+            order for order in self.orders if order.status != OrderStatus.FILLED
         )
 
     def execute_pending_orders(self) -> None:
@@ -222,10 +116,11 @@ class Account:
 
 
 def main() -> None:
-    acc = Account(starting_balance=10_000.0)
+    acc = Account(starting_balance=10_000)
     acc.buy_stock(ticker="AAPL", qty=10)
     acc.buy_stock(ticker="GOOGL", qty=5)
     acc.sell_stock(ticker="AAPL")
+    pprint(acc)
 
 
 if __name__ == "__main__":
