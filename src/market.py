@@ -33,16 +33,16 @@ class OrderStatus(IntEnum):
 class Order:
     ticker: str
     action: Action
-    amount: int = 0
+    qty: int = 0
     price: Decimal = field(init=False)
     filled: int = field(init=False, default=0)
     timestamp: float = datetime.now().timestamp()
 
     def __str__(self) -> str:
-        return f"<{self.action.name} {self.ticker} @ {self.price} ({self.filled}/{self.amount} filled)>"
+        return f"<{self.action.name} {self.ticker} @ {self.price} ({self.filled}/{self.qty} filled)>"
 
     def __post_init__(self) -> None:
-        if self.amount < 0:
+        if self.qty < 0:
             raise ValueError("Can't make an order for a negative amount.")
         if self.action not in Action:
             raise ValueError("Invalid Action.")
@@ -50,7 +50,7 @@ class Order:
 
     def fill(self, amount: int | None = None) -> None:
         if amount is None:
-            self.filled = self.amount
+            self.filled = self.qty
         else:
             if amount < 0:
                 raise ValueError("Amount to fill cannot be negative.")
@@ -63,17 +63,17 @@ class Order:
 
     @property
     def remaining(self) -> int:
-        return self.amount - self.filled
+        return self.qty - self.filled
 
     @property
     def size(self) -> Decimal:
-        return self.amount * self.price
+        return self.qty * self.price
 
     @property
     def status(self) -> OrderStatus:
-        if self.filled == self.amount:
+        if self.filled == self.qty:
             return OrderStatus.FILLED
-        if 0 < self.filled < self.amount:
+        if 0 < self.filled < self.qty:
             return OrderStatus.PARTIALLY_FILLED
         return OrderStatus.UNFILLED
 
@@ -85,7 +85,7 @@ class Position:
     price: Decimal = Decimal()
 
     def update_from_order(self, order: Order) -> None:
-        self.update(order.amount if order.action == Action.BUY else -order.amount)
+        self.update(order.qty if order.action == Action.BUY else -order.qty)
         order.fill()
 
     def update(self, qty: int, new_price: Decimal | None = None) -> None:
@@ -114,10 +114,10 @@ class Trade:
     timestamp: float = datetime.now().timestamp()
 
     def __post_init__(self, position: Position) -> None:
-        if position.qty > self.order.amount:
+        if position.qty > self.order.qty:
             raise ValueError()
         self.entry_price = position.price
 
     @property
     def realized_pnl(self) -> Decimal:
-        return (self.order.price - self.entry_price) * self.order.amount
+        return (self.order.price - self.entry_price) * self.order.qty
