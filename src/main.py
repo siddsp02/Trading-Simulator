@@ -1,9 +1,14 @@
 # !usr/bin/env python3
 
-from dataclasses import dataclass, field
+from collections import defaultdict, deque
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from enum import IntEnum
+from functools import partial
+from math import nan
 from pprint import pprint
+from statistics import mean
+from typing import Iterable, Iterator
 
 STOCK_PRICES = {"AAPL": 200, "GOOGL": 200, "MSFT": 400}
 
@@ -24,12 +29,19 @@ class Order:
     ticker: str
     action: Action
     amount: int = 0
+    price: float = field(init=False)
     filled: int = field(init=False, default=0)
     timestamp: float = datetime.now().timestamp()
+
+    def __str__(self) -> str:
+        return f"<{self.action.name} {self.ticker} @ {self.price} ({self.filled}/{self.amount} filled)>"
 
     def __post_init__(self) -> None:
         if self.amount < 0:
             raise ValueError("Can't make an order for a negative amount.")
+        if self.action not in Action:
+            raise ValueError("Invalid Action.")
+        self.price = get_stock_price(self.ticker)
 
     def fill(self, amount: int | None = None) -> None:
         if amount is None:
@@ -41,13 +53,16 @@ class Order:
                 raise ValueError("Cannot fill more stocks than remaining in order.")
             self.filled += amount
 
+    def get_size(self, absval: bool = True) -> float:
+        return self.size if (self.action == Action.BUY or absval) else -self.size
+
     @property
     def remaining(self) -> int:
         return self.amount - self.filled
 
     @property
     def size(self) -> float:
-        return self.amount * get_stock_price(self.ticker)
+        return self.amount * self.price
 
     @property
     def status(self) -> Status:
@@ -71,6 +86,10 @@ class Position:
     qty: int = 0
     price: float = 0
 
+    def update_from_order(self, order: Order) -> None:
+        self.update(order.amount if order.action == Action.BUY else -order.amount)
+        order.fill()
+
     def update(self, qty: int, new_price: float | None = None) -> None:
         if new_price is None:
             new_price = get_stock_price(self.ticker)
@@ -90,14 +109,48 @@ class Position:
 
 
 @dataclass
+class Trade:
+    position: InitVar[Position]
+    order: Order
+    entry_price: float = field(init=False)
+    timestamp: float = datetime.now().timestamp()
+
+    def __post_init__(self, position: Position) -> None:
+        if position.qty > self.order.amount:
+            raise ValueError()
+        self.entry_price = position.price
+
+    @property
+    def realized_pnl(self) -> float:
+        return (self.order.price - self.entry_price) * self.order.amount
+
+
+@dataclass
 class Account:
-    cash: float
+    starting_balance: InitVar[float]
+    cash: float = field(init=False)
     positions: dict[str, Position] = field(init=False, default_factory=dict)
     orders: list[Order] = field(init=False, default_factory=list)
 
-    def __post_init__(self) -> None:
-        if self.cash < 0:
+    def __post_init__(self, starting_balance: float) -> None:
+        if starting_balance < 0:
             raise ValueError("Funds cannot be negative.")
+        self.balance = starting_balance
+
+    def deposit(self, amount: float) -> None:
+        if amount < 0:
+            raise ValueError("Can only deposit a non-negative amount of money.")
+        self.balance += amount
+
+    def withdraw(self, amount: float) -> None:
+        if amount > self.balance:
+            raise ValueError("Cannot withdraw more money than you have.")
+        if amount < 0:
+            raise ValueError("Cannot withdraw a negative amount.")
+        # You can withdraw a negative amount, which is just the same
+        # as depositing. It's a weird way of doing the same thing,
+        # but we'll allow it.
+        self.balance -= amount
 
     @property
     def pnl(self) -> float:
@@ -128,39 +181,61 @@ class Account:
 
     def make_order(self, ticker: str, action: Action, qty: int) -> Order:
         order = Order(ticker, action, qty)
-        if order.size > self.balance:
-            raise ValueError("Insufficient funds to make order.")
+        match action:
+            case Action.BUY:
+                if order.size > self.balance:
+                    raise ValueError("Insufficient funds to make order.")
+            case Action.SELL:
+                if qty > self.positions[ticker].qty:
+                    raise ValueError("Can't sell more stocks than you own")
         self.orders.append(order)
         return order
 
     def execute_order(self, order: Order) -> None:
         ticker = order.ticker
-        match order.action:
-            case Action.BUY:
-                self.balance -= order.size
-                position = self.positions.setdefault(ticker, Position(ticker))
-                position.update(order.amount)
-                order.fill()
-            case Action.SELL:
-                position = self.positions[order.ticker]
-                if order.amount > position.qty:
-                    raise ValueError("Can't sell more stocks than you own.")
-                self.balance += order.size
-                position.update(-order.amount)
-                order.fill()
-            case _:
-                raise ValueError("Invalid action.")
+        position = self.positions.setdefault(ticker, Position(ticker))
+        position.update_from_order(order)
+        self.balance -= order.get_size(absval=False)
+
+    def make_and_execute_order(self, ticker: str, action: Action, qty: int) -> None:
+        order = self.make_order(ticker, action, qty)
+        self.execute_order(order)
+
+    def buy_stock(self, ticker: str, qty: int | None = None) -> None:
+        if qty is None:
+            qty = int(self.balance / get_stock_price(ticker))
+        order = self.make_order(ticker, Action.BUY, qty)
+        self.execute_order(order)
+
+    def sell_stock(self, ticker: str, qty: int | None = None) -> None:
+        if qty is None:
+            qty = self.positions[ticker].qty
+        order = self.make_order(ticker, Action.SELL, qty)
+        self.execute_order(order)
+
+
+def moving_avg(
+    it: Iterable[float], n: int = 10, default: float = nan
+) -> Iterable[float]:
+    window = deque([default] * n, maxlen=n)
+    for value in it:
+        window.append(value)
+        yield mean(window)
+
+
+def multi_moving_avg(
+    it: Iterable[float], periods: list[int] | None = None
+) -> Iterator[tuple[float, ...]]:
+    if periods is None:
+        periods = []
+    yield from zip(*map(partial(moving_avg, it), periods))
 
 
 def main() -> None:
-    acc = Account(10_000.0)
-    order = acc.make_order("AAPL", Action.BUY, 10)
-    print(order)
-    pprint(acc)
-    acc.execute_pending_orders()
-    pprint(acc)
-    acc.clear_filled_orders()
-    pprint(acc)
+    acc = Account(starting_balance=10_000.0)
+    acc.buy_stock(ticker="AAPL", qty=10)
+    acc.buy_stock(ticker="GOOGL", qty=5)
+    acc.sell_stock(ticker="AAPL")
 
 
 if __name__ == "__main__":
