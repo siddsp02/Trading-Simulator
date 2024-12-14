@@ -1,20 +1,12 @@
 # !usr/bin/env python3
 
-from collections import deque
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from enum import IntEnum
-from functools import partial
-from math import nan
-from statistics import mean
-from typing import Iterable, Iterator
+
+from technicals import Action
 
 STOCK_PRICES = {"AAPL": 200, "GOOGL": 200, "MSFT": 400}
-
-
-class Action(IntEnum):
-    BUY = 0
-    SELL = 1
 
 
 class Status(IntEnum):
@@ -218,23 +210,6 @@ class Account:
                 self.sell_stock(ticker, qty)
             case _:
                 raise ValueError("Invalid action.")
-
-
-def moving_avg(
-    it: Iterable[float], n: int = 10, default: float = nan
-) -> Iterable[float]:
-    window = deque([default] * n, maxlen=n)
-    for value in it:
-        window.append(value)
-        yield mean(window)
-
-
-def multi_moving_avg(
-    it: Iterable[float], periods: list[int] | None = None
-) -> Iterator[tuple[float, ...]]:
-    if periods is None:
-        periods = []
-    yield from zip(*map(partial(moving_avg, it), periods))
 
 
 def main() -> None:
